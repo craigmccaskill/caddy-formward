@@ -1,7 +1,9 @@
-# Built binaries (don't commit large artifacts)
-posthorn
-posthorn.bin
-core/posthorn
+# Built binaries — root-anchored paths so we don't accidentally match
+# directories named "posthorn" (e.g., core/cmd/posthorn/ source dir).
+/posthorn
+/posthorn.bin
+/core/posthorn
+/bin/
 
 # Test artifacts
 *.test
