@@ -12,9 +12,9 @@ The full project history (rename from "caddy-mailout", why v1.0 is Postmark-only
 
 **Phase:** pre-v1.0 implementation. Spec is locked.
 
-**Repo state:** Epic 1 complete. Stories 1.1-1.3 done (module scaffolding, Caddyfile unmarshaler with path matcher, minimal 200 OK handler, JSON config support, Provision/Validate stubs, round-trip tests).
+**Repo state:** Epic 1 complete. Story 2.1 complete (Transport interface, Message struct, TransportError with classification, sample mockTransport in tests).
 
-**Current story:** Story 2.1 — Transport interface and Message/error types in `transport.go`. See [`spec/02-prd.md`](./spec/02-prd.md) §"Epic 2".
+**Current story:** Story 2.2 — `transport_postmark.go`: Postmark JSON HTTP API client with retry classification per FR18-20 and NFR1 header-injection guard. See [`spec/02-prd.md`](./spec/02-prd.md) §"Epic 2".
 
 After each story ships, update this "Current story" pointer.
 
