@@ -1,20 +1,22 @@
 # CLAUDE.md — caddy-formward
 
-This file is auto-loaded by Claude Code at session start. It captures the durable project context, current status, and development guardrails for this repository.
+Auto-loaded by Claude Code at session start. Captures the durable project context, current status, and the guardrails that need to be in front of every code change. Build/test commands, commit conventions, and contributor scope policy live in [CONTRIBUTING.md](./CONTRIBUTING.md) — read both at the start of any code session.
 
 ## Project context
 
 caddy-formward is a Caddy v2 HTTP handler module that receives form submissions and delivers them via pluggable transports. v1.0 ships with a single Postmark HTTP API transport, designed for hosts where outbound SMTP is blocked (DigitalOcean, AWS, etc.).
 
-The full project history, including why it was renamed from "caddy-mailout" and why v1.0 is Postmark-only, is in [`spec/01-project-brief.md`](./spec/01-project-brief.md) §"Status log" and §"Problem Statement". Don't re-derive — read the spec.
+The full project history (rename from "caddy-mailout", why v1.0 is Postmark-only) is in [`spec/01-project-brief.md`](./spec/01-project-brief.md) §"Status log" and §"Problem Statement". Don't re-derive — read the spec.
 
 ## Status (as of 2026-04-27)
 
-**Phase:** pre-v1.0 implementation. Spec is locked, code has not started.
+**Phase:** pre-v1.0 implementation. Spec is locked.
 
-**Repo state:** Only `LICENSE`, `README.md`, `CLAUDE.md`, and `spec/` (locked specification). No Go code yet.
+**Repo state:** Story 1.1 complete (module scaffolding, registration). Working from Epic 1.
 
-**Next task:** Epic 1, Story 1.1 from [`spec/02-prd.md`](./spec/02-prd.md).
+**Current story:** Story 1.2 — Caddyfile unmarshaler + minimal handler returning 200 OK. See [`spec/02-prd.md`](./spec/02-prd.md) §"Epic 1".
+
+After each story ships, update this "Current story" pointer.
 
 ## Read the spec before touching code
 
@@ -24,20 +26,7 @@ The v1.0 specification is locked across three documents in [`spec/`](./spec/):
 2. **[`spec/02-prd.md`](./spec/02-prd.md)** — 22 functional requirements, 16 non-functional requirements, 7-epic breakdown with 22 stories and acceptance criteria
 3. **[`spec/03-architecture.md`](./spec/03-architecture.md)** — file layout, Caddy lifecycle, request flow, component design, threat-to-defense mapping, dependencies, ADRs
 
-Read all three before writing the first line of code. The PRD has the canonical FR/NFR list with "must"-level requirements; the architecture doc has the implementation blueprint.
-
-## Current story: Story 1.1
-
-> Initialize Go module at `github.com/craigmccaskill/caddy-formward`. Create `go.mod` with Go 1.25 and Caddy 2.11 dependencies. Implement the minimal `caddy.Module` interface (`CaddyModule()` returning `caddy.ModuleInfo` with ID `http.handlers.formward`).
-
-**Acceptance:**
-- `go build ./...` succeeds
-- `xcaddy build --with github.com/craigmccaskill/caddy-formward=.` produces a binary
-- That binary, run with `./caddy list-modules`, includes `http.handlers.formward`
-
-**Files this story creates:** `go.mod`, `formward.go` (minimal stub — full ServeHTTP comes in Story 1.2), and possibly `.gitignore` for `*.test`, the built `caddy` binary, and `coverage.out`.
-
-After Story 1.1 ships, update this CLAUDE.md to point to Story 1.2 (Caddyfile unmarshaler + minimal handler).
+The PRD has the canonical FR/NFR list with "must"-level requirements; the architecture doc has the implementation blueprint, including the target file layout under §"File layout".
 
 ## Hard guardrails
 
@@ -59,69 +48,6 @@ These derive from the locked spec. Do not violate without an explicit conversati
 6. **Every FR/NFR traces back to the brief.** If you find yourself writing something not traceable to a spec requirement, stop and check the spec rather than improvising.
 
 7. **Follow the architecture doc's file layout exactly.** Flat package, file names match [`spec/03-architecture.md`](./spec/03-architecture.md) §"File layout". No sub-packages in v1.0.
-
-## Build and test commands
-
-Once Go is installed and `xcaddy` is on PATH:
-
-```bash
-# Standard Go workflow
-go build ./...
-go test ./...
-go vet ./...
-
-# Build a Caddy binary with this module
-xcaddy build --with github.com/craigmccaskill/caddy-formward=.
-
-# Verify module registration
-./caddy list-modules | grep formward
-```
-
-CI will run `go test ./... && go vet ./...` on push and PR (Story 7.3).
-
-## File layout (target)
-
-Per [`spec/03-architecture.md`](./spec/03-architecture.md) §"File layout":
-
-```
-caddy-formward/
-├── formward.go            # Module registration, ServeHTTP, lifecycle hooks
-├── caddyfile.go           # Caddyfile unmarshaler
-├── config.go              # Module struct, JSON tags, Provision, Validate
-├── transport.go           # Transport interface, Message struct, error types
-├── transport_postmark.go  # Postmark HTTP API implementation
-├── spam.go                # Honeypot, Origin/Referer, max-body-size checks
-├── ratelimit.go           # Token bucket rate limiter, IP extraction, LRU
-├── validate.go            # Required-fields and email-format validation
-├── template.go            # Subject/body rendering, custom-fields passthrough
-├── response.go            # JSON response builder, content negotiation
-├── logging.go             # Structured logging helpers, submission ID
-├── *_test.go              # Co-located unit and integration tests
-├── go.mod, go.sum
-├── Dockerfile             # xcaddy build + slim runtime image
-├── LICENSE                # Apache-2.0
-├── README.md
-├── CLAUDE.md              # this file
-├── spec/                  # locked v1.0 specification
-└── .github/workflows/ci.yml
-```
-
-## Commit conventions
-
-- Tag each commit with the story ID it implements: `feat: scaffold module skeleton (Story 1.1)`
-- Prefix conventions: `feat:` for new functionality, `fix:` for bug fixes, `test:` for test-only commits, `docs:` for documentation changes, `chore:` for build/config/CI
-- Reference the relevant FR or NFR in the commit body when it adds clarity (e.g., "Implements NFR1 — header injection prevention via structured JSON API")
-- Don't squash stories into a single commit — each story should be at least one commit so the git history maps to the PRD
-
-## Spec sync note
-
-The canonical specification lives in this repository at `spec/`. The author also maintains an Obsidian vault with the same documents plus the broader project dashboard, roadmap notes, and cross-project links. If implementation reveals something the spec missed:
-
-1. Update the spec in this repo
-2. Mirror the change to the Obsidian vault (the author's editing surface)
-3. Reference the spec change in the commit that exposes it
-
-The repo's `spec/` is the source of truth for code-side work. The Obsidian vault is for ongoing project planning beyond v1.0.
 
 ## Architectural decisions worth knowing
 

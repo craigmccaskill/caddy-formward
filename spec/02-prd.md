@@ -220,17 +220,20 @@ Seven epics, sized for implementation in sequence. Each story is intended to be 
 - **Story 6.2:** Wire Caddy structured (zap) logging throughout. Implement `log_failed_submissions` config with default true. On terminal failure, emit ERROR-level log with full submission payload (form fields, headers); on `false`, emit ERROR with metadata only. Generate UUIDv4 submission IDs and propagate through all logs for the request (NFR7, NFR8).
   - Acceptance: Tests assert presence of structured fields in log output, presence/absence of payload based on config, propagation of submission_id across log lines for one request. NFR3 test asserts API key never appears in any log output.
 
-### Epic 7: Documentation and release (~1h)
+### Epic 7: Documentation and release (~1.5–2h)
 
-**Definition of done:** Repository has a complete README, working Dockerfile, basic CI, and a tagged v1.0.0 release with the modules-page submission filed.
+**Definition of done:** Repository has a complete README, OSS-hygiene docs (CONTRIBUTING, SECURITY, code of conduct, changelog, GitHub templates), working Dockerfile, basic CI, and a tagged v1.0.0 release with the modules-page submission filed.
 
-- **Story 7.1:** Write README with: project description, "why" framing (DigitalOcean port-587 motivation), copy-pasteable Caddyfile example, complete directive reference, DNS prerequisites (SPF/DKIM/DMARC), build instructions (xcaddy + Docker), license note. NFR14, NFR15, NFR16 satisfied.
-  - Acceptance: README example builds and runs against a real Postmark account on a clean Caddy install. Reviewed for completeness against NFR14-16 checklist.
+- **Story 7.1:** Write README with: project description, "why" framing (DigitalOcean port-587 motivation), copy-pasteable Caddyfile example, complete directive reference, DNS prerequisites (SPF/DKIM/DMARC), build instructions (xcaddy + Docker), badges (CI status, license, latest release), license note. Set GitHub repo metadata: description, topics (`caddy`, `caddy-module`, `contact-form`, `postmark`). NFR14, NFR15, NFR16 satisfied.
+  - Acceptance: README example builds and runs against a real Postmark account on a clean Caddy install. Reviewed for completeness against NFR14-16 checklist. GitHub repo description and topics set.
+
+- **Story 7.1a:** Add OSS hygiene files. (`CONTRIBUTING.md` already exists from initial setup — verify it's still accurate at release time.) Add `SECURITY.md` documenting the vulnerability disclosure process and the explicit security guarantees (NFR1 header injection prevention, NFR3 API key handling, NFR4 fail-closed origin checks). Add `CODE_OF_CONDUCT.md` adopting Contributor Covenant 2.1. Add `CHANGELOG.md` in [Keep a Changelog](https://keepachangelog.com) format with the v1.0.0 entry seeded from prior story commits. Add `.github/PULL_REQUEST_TEMPLATE.md` and `.github/ISSUE_TEMPLATE/` (bug report + feature request).
+  - Acceptance: All listed files present and reviewed against standard OSS templates. SECURITY.md gives a clear reporting channel and references the relevant NFRs. CHANGELOG.md is current as of the v1.0.0 tag.
 
 - **Story 7.2:** Add `Dockerfile` using `xcaddy` builder pattern. Verify image builds, runs Caddy with the module loaded, and accepts form submissions.
   - Acceptance: `docker build` succeeds; running container with sample Caddyfile + Postmark API key sends test email successfully.
 
-- **Story 7.3:** Add basic GitHub Actions CI: `go test ./...` and `go vet` on push and PR. No matrix builds; just a single Linux + Go 1.23 job.
+- **Story 7.3:** Add basic GitHub Actions CI: `go test ./...` and `go vet` on push and PR. No matrix builds; just a single Linux + Go 1.25 job.
   - Acceptance: CI passes on a clean main branch.
 
 - **Story 7.4:** Tag v1.0.0 release with release notes summarizing v1.0 scope. Build and push Docker image to GitHub Container Registry. File the modules-page submission PR against `caddyserver/website` per the modules contribution process.
