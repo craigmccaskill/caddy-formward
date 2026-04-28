@@ -1,11 +1,11 @@
 ---
-title: "Architecture: caddy-formward v1.0"
+title: "Architecture: Posthorn v1.0"
 status: locked
 created: 2026-04-27
 synced_from_obsidian: 2026-04-27
 ---
 
-# Architecture: caddy-formward v1.0
+# Architecture: Posthorn v1.0
 
 This document describes the structure, lifecycle, and component design for the v1.0 implementation. Every architectural decision derives from a requirement in [the PRD](./02-prd.md), which in turn derives from a commitment in [the project brief](./01-project-brief.md). Nothing here introduces new behavior.
 
@@ -13,110 +13,159 @@ This is the implementation blueprint. Open it before writing code; reference it 
 
 ## Module overview
 
-caddy-formward is a single Go package that registers as `http.handlers.formward` with Caddy. It implements the `caddyhttp.MiddlewareHandler` interface, intercepting POST requests on configured paths and turning them into outbound emails.
+Posthorn is a **two-module Go workspace** in a single repository. The two modules have a strict, one-way dependency:
 
-The package is intentionally flat — one Go module, no sub-packages — because Caddy expects modules to register from a single import path and the v1.0 scope doesn't justify package boundaries. Sub-packages may emerge in v2 (e.g., `internal/storage` for SQLite).
+- `github.com/craigmccaskill/posthorn` — the **core gateway**. Standalone, no Caddy dependency. Provides `cmd/posthorn` (the binary) and the importable HTTP form handler, transport implementations, and supporting libraries.
+- `github.com/craigmccaskill/posthorn/caddy` — the **Caddy adapter**. Imports core; depends on Caddy. Wraps the core HTTP handler as `http.handlers.posthorn` for use inside Caddy.
+
+The core never imports Caddy. The adapter never reimplements core logic. This dependency direction is enforced architecturally — see ADR-6.
 
 ```
-                        ┌──────────────────────────────────┐
-                        │ Caddy v2 (xcaddy build)          │
-                        │  ┌────────────────────────────┐  │
-HTTP request ──────────▶│  │ caddy-formward handler     │  │
-                        │  │                            │  │
-                        │  │  body cap → method →       │  │
-                        │  │  content-type → origin →   │  │
-                        │  │  rate limit → form parse → │  │
-                        │  │  honeypot → validation →   │  │
-                        │  │  template render →         │  │
-                        │  │  Transport.Send()          │  │
-                        │  └─────────────┬──────────────┘  │
-                        │                │                 │
-                        └────────────────┼─────────────────┘
-                                         │
-                                         ▼
-                                  ┌──────────────┐
-                                  │ Postmark API │
-                                  └──────────────┘
+                       ┌──────────────────────────────────┐
+HTTP request ─────────▶│   Standalone deployment          │
+                       │                                  │
+                       │   posthorn binary (cmd/posthorn) │
+                       │     │                            │
+                       │     ▼                            │
+                       │   core/http handler              │
+                       │     │                            │
+                       └─────┼────────────────────────────┘
+                             │
+                             ▼
+                       ┌──────────────┐
+                       │ Postmark API │
+                       └──────────────┘
+                             ▲
+                       ┌─────┼────────────────────────────┐
+                       │     │                            │
+                       │   core/http handler              │
+                       │     ▲                            │
+                       │     │                            │
+                       │   caddy adapter                  │
+                       │   (http.handlers.posthorn)       │
+                       │     ▲                            │
+                       │   Caddy v2 (xcaddy build)        │
+HTTP request ─────────▶│                                  │
+                       │   Caddy adapter deployment       │
+                       └──────────────────────────────────┘
 ```
+
+Both deployment shapes hand identical inputs to the same `core/http` handler, so behavior is identical by construction. Tests assert this parity (see Test architecture).
 
 ## File layout
 
-All files live at the top level of the repository. Co-located `_test.go` files hold tests for the file they test.
-
 ```
-caddy-formward/
-├── formward.go            # Module registration, ServeHTTP, lifecycle hooks
-├── caddyfile.go           # Caddyfile unmarshaler
-├── config.go              # Module struct, JSON tags, Provision, Validate
-├── transport.go           # Transport interface, Message struct, error types
-├── transport_postmark.go  # Postmark HTTP API implementation
-├── spam.go                # Honeypot, Origin/Referer, max-body-size checks
-├── ratelimit.go           # Token bucket rate limiter, IP extraction, LRU
-├── validate.go            # Required-fields and email-format validation
-├── template.go            # Subject/body rendering, custom-fields passthrough
-├── response.go            # JSON response builder, content negotiation
-├── logging.go             # Structured logging helpers, submission ID
-├── *_test.go              # Co-located unit and integration tests
-├── go.mod
-├── go.sum
-├── Dockerfile             # xcaddy build + slim runtime image
-├── LICENSE                # Apache-2.0
-├── README.md
-├── spec/                  # Locked specification (synced from author's Obsidian vault)
+posthorn/
+├── go.work                       # joins core/ and caddy/ for development
+├── README.md                     # both deployment shapes documented
+├── LICENSE                       # Apache-2.0
+├── CONTRIBUTING.md
+├── SECURITY.md
+├── CODE_OF_CONDUCT.md
+├── CHANGELOG.md
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml                # go test ./... + go vet across both modules
+│   │   └── release.yml           # tag → multi-arch Docker image to GHCR
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── ISSUE_TEMPLATE/
+├── docs/
+│   ├── manual-test.md            # end-to-end test procedure
+│   └── modules-page-entry.json   # caddyserver.com modules submission
+├── spec/
 │   ├── 01-project-brief.md
 │   ├── 02-prd.md
 │   └── 03-architecture.md
-└── .github/
-    └── workflows/
-        └── ci.yml         # go test ./... + go vet on push/PR
+├── core/
+│   ├── go.mod                    # github.com/craigmccaskill/posthorn
+│   ├── go.sum
+│   ├── Dockerfile                # multi-stage; produces slim posthorn image
+│   ├── cmd/
+│   │   └── posthorn/
+│   │       └── main.go           # CLI entry: serve, validate
+│   ├── config/
+│   │   ├── config.go             # Config struct, TOML parser, env resolution
+│   │   └── config_test.go
+│   ├── http/
+│   │   ├── handler.go            # core.Handler (http.Handler implementor)
+│   │   ├── pipeline.go           # ordered pipeline: spam → validate → render → send
+│   │   └── handler_test.go
+│   ├── transport/
+│   │   ├── transport.go          # Transport interface, Message, ErrorClass, TransportError
+│   │   ├── postmark.go           # Postmark HTTP API implementation
+│   │   ├── transport_test.go
+│   │   └── postmark_test.go
+│   ├── spam/
+│   │   ├── spam.go               # Honeypot, Origin/Referer, body size
+│   │   └── spam_test.go
+│   ├── ratelimit/
+│   │   ├── ratelimit.go          # Token bucket, LRU-bounded
+│   │   ├── clientip.go           # X-Forwarded-For with trusted_proxies
+│   │   └── ratelimit_test.go
+│   ├── validate/
+│   │   ├── validate.go           # Required-fields, email format
+│   │   └── validate_test.go
+│   ├── template/
+│   │   ├── template.go           # Subject/body rendering, custom-fields passthrough
+│   │   └── template_test.go
+│   ├── response/
+│   │   ├── response.go           # JSON builder, content negotiation, redirects
+│   │   └── response_test.go
+│   └── log/
+│       ├── log.go                # Structured logging helpers, submission ID
+│       └── log_test.go
+└── caddy/
+    ├── go.mod                    # github.com/craigmccaskill/posthorn/caddy
+    ├── go.sum
+    ├── module.go                 # Module registration, ServeHTTP wrapper
+    ├── caddyfile.go              # Caddyfile unmarshaler → core/config.Config
+    └── caddyfile_test.go
 ```
 
-## Caddy module lifecycle
+The core uses **internal sub-packages** (one per concern), in deliberate contrast to the prior `caddy-formward` design's flat layout (see ADR-2 below). The shape is justified by the dual-module structure: a shared library that's imported by both `cmd/posthorn` and the Caddy adapter benefits from clean package boundaries.
 
-The module implements the following Caddy interfaces:
+## Lifecycles
+
+Two deployment shapes have two lifecycles. Both end up running the same `core/http.Handler`.
+
+### Standalone lifecycle
+
+```
+1. main.go: parse CLI flags (subcommand: serve | validate)
+2. config.Load(path): read TOML, resolve ${env.VAR}, validate schema
+3. For each endpoint in config:
+     a. Construct transport (Postmark client with API key)
+     b. Compile templates (subject, body)
+     c. Construct rate limiter
+     d. Construct core.Handler with all of the above
+4. Build http.ServeMux mapping each endpoint path to its core.Handler
+5. http.Server.ListenAndServe()
+6. On SIGTERM/SIGINT:
+     a. Stop accepting new connections (server.Shutdown)
+     b. Drain in-flight requests up to 10s per-request timeout
+     c. Exit 0
+   On second signal: forced exit
+```
+
+### Caddy adapter lifecycle
+
+The adapter implements Caddy's standard module interfaces:
 
 | Interface | Purpose | When called |
 |---|---|---|
-| `caddy.Module` | Module registration | Once at startup, returns `caddy.ModuleInfo{ID: "http.handlers.formward"}` |
-| `caddyfile.Unmarshaler` | Caddyfile → struct | When operator uses Caddyfile config |
+| `caddy.Module` | Registration | Once at startup |
+| `caddyfile.Unmarshaler` | Caddyfile → Module struct | Config load |
 | `caddy.Provisioner` | One-time setup | After config loaded, before serving |
-| `caddy.Validator` | Config sanity checks | After `Provision`, before serving |
-| `caddyhttp.MiddlewareHandler` | Per-request handler | On every matched request |
+| `caddy.Validator` | Config sanity checks | After Provision |
+| `caddyhttp.MiddlewareHandler` | Per-request | On every matched request |
 
-### Provision
+`Provision` reuses `core/config` to translate the Caddyfile-parsed struct into the same internal `core.Config` that the standalone path produces. From there, the adapter constructs a `core.Handler` identically to standalone. `ServeHTTP` delegates to the wrapped `core.Handler`.
 
-Called once when the configuration is loaded (or reloaded). Responsibilities:
-
-1. Resolve `{env.VAR}` placeholders in transport config (Postmark API key)
-2. Parse subject and body templates; cache compiled `*template.Template`
-3. Construct the configured transport instance (Postmark in v1.0)
-4. Construct the rate limiter with configured capacity and interval
-5. Set up the structured logger via the Caddy context (`ctx.Logger(m)`)
-6. Default unset values: `log_failed_submissions=true`, `max_body_size=64KB`, `email_field="email"`
-
-Provision errors are fatal at config-load time, surfaced to the operator via `caddy validate` or `caddy run`.
-
-### Validate
-
-Lightweight semantic checks beyond what Provision needs:
-
-- `to` is non-empty and contains valid email format
-- `from` is non-empty
-- If `allowed_origins` is present, the list is non-empty (NFR4 — explicit-empty rejection)
-- If `required` is non-empty, the listed field names are syntactically valid
-- Templates parse successfully (delegated to Provision; just confirm cached templates exist)
-
-### ServeHTTP
-
-The per-request handler. Detailed flow in [Request flow](#request-flow) below.
-
-### CleanupUpper (deferred)
-
-v1.0 has no background goroutines (the rate limiter is lazy — refills on `Allow()`), so the `CleanupUpper` interface is **not** implemented in v1.0. Add it in v2 when SQLite or persistent retry queues introduce background work.
+This is the load-bearing parity: both lifecycles converge on a `core.Handler` constructed from a `core.Config`. Tests assert that for any given operator-facing input (TOML or Caddyfile), the resulting `core.Handler` produces identical outputs.
 
 ## Request flow
 
-The handler processes each request through an ordered pipeline. Order is intentional — cheaper checks first, header-only checks before body-parsing checks, security checks before processing.
+The `core/http.Handler` processes each request through an ordered pipeline. Order is intentional — cheaper checks first, header-only checks before body-parsing checks, security checks before processing.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -132,81 +181,72 @@ The handler processes each request through an ordered pipeline. Order is intenti
 │ 10. generate submission ID (UUIDv4), log "submission_received"│
 │ 11. render subject template                                  │
 │ 12. render body template + custom-fields passthrough         │
-│ 13. transport.Send() with retry policy (FR18-21)             │
+│ 13. transport.Send() with retry policy (FR19-22)             │
 │ 14. log outcome, write response (JSON or redirect)           │  200/502
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Ordering rationale
-
-- **Body size first.** Wrapping the reader before any read prevents large bodies from being buffered. The actual rejection fires when something attempts to read past the cap (typically `r.ParseForm` at step 6).
-- **Header checks before form parse.** Origin/Referer and rate limit don't need the body parsed; rejecting at step 4-5 saves CPU and prevents form-parse-based DoS.
-- **Rate limit before form parse.** Token bucket check is O(1) and uses connection IP — no need to wait for body.
-- **Honeypot before validation.** Honeypot must respond `200` silently. If validation ran first and returned `422` for a bot's missing required fields, the bot would learn the field structure. Honeypot first means bots get an indistinguishable success response.
-- **Validation before template render.** Templates can reference any field; a missing required field would render as empty in the email. Reject at validation so the operator's inbox shows complete submissions.
-- **Submission ID at step 10.** After all rejection paths but before the send. Bots and rate-limited requests don't get IDs (no point — they have no recoverable state).
+Ordering rationale carries over from the prior architecture (cheaper-first, header-before-body, security-first). Identical in both deployment shapes.
 
 ## Component design
 
-### Configuration model
+### Configuration model (`core/config`)
 
-The single `Module` struct holds both serialized config (via `json:` tags) and runtime state (unexported). Caddy's reflection-based JSON marshaling handles the serialized portion; runtime state is populated in `Provision`.
+A single top-level `Config` struct holds the parsed configuration. Source format (TOML for standalone, Caddyfile for the adapter) does not affect the struct — both converge.
 
 ```go
-type Module struct {
-    // Serialized config
-    Path                  string             `json:"path,omitempty"`
-    To                    []string           `json:"to,omitempty"`
-    From                  string             `json:"from,omitempty"`
-    Transport             TransportConfig    `json:"transport,omitempty"`
-    RateLimit             *RateLimitConfig   `json:"rate_limit,omitempty"`
-    TrustedProxies        []string           `json:"trusted_proxies,omitempty"`
-    Honeypot              string             `json:"honeypot,omitempty"`
-    AllowedOrigins        []string           `json:"allowed_origins,omitempty"`
-    MaxBodySize           int64              `json:"max_body_size,omitempty"`
-    Required              []string           `json:"required,omitempty"`
-    EmailField            string             `json:"email_field,omitempty"`
-    Subject               string             `json:"subject,omitempty"`
-    Body                  string             `json:"body,omitempty"`
-    LogFailedSubmissions  *bool              `json:"log_failed_submissions,omitempty"`
-    RedirectSuccess       string             `json:"redirect_success,omitempty"`
-    RedirectError         string             `json:"redirect_error,omitempty"`
+type Config struct {
+    Endpoints []EndpointConfig `toml:"endpoints"`
+    Logging   LoggingConfig    `toml:"logging"`
+}
 
-    // Runtime (populated in Provision, not serialized)
-    transport  Transport
-    limiter    *rateLimiter
-    subjectTpl *template.Template
-    bodyTpl    *template.Template
-    logger     *zap.Logger
+type EndpointConfig struct {
+    Path                 string             `toml:"path"`
+    To                   []string           `toml:"to"`
+    From                 string             `toml:"from"`
+    Transport            TransportConfig    `toml:"transport"`
+    RateLimit            *RateLimitConfig   `toml:"rate_limit"`
+    TrustedProxies       []string           `toml:"trusted_proxies"`
+    Honeypot             string             `toml:"honeypot"`
+    AllowedOrigins       []string           `toml:"allowed_origins"`
+    MaxBodySize          string             `toml:"max_body_size"` // "32KB", "1MB"
+    Required             []string           `toml:"required"`
+    EmailField           string             `toml:"email_field"`
+    Subject              string             `toml:"subject"`
+    Body                 string             `toml:"body"`
+    LogFailedSubmissions *bool              `toml:"log_failed_submissions"`
+    RedirectSuccess      string             `toml:"redirect_success"`
+    RedirectError        string             `toml:"redirect_error"`
+}
+
+type TransportConfig struct {
+    Type     string                 `toml:"type"`     // "postmark"
+    Settings map[string]any         `toml:"settings"` // transport-specific (api_key for postmark)
 }
 ```
 
-`*bool` for `LogFailedSubmissions` allows distinguishing unset (default true) from explicitly false.
+`*bool` for `LogFailedSubmissions` allows distinguishing unset (default true) from explicitly false (see ADR-4).
 
-### Transport interface
+Env-var resolution (`${env.VAR}`) runs as a post-parse pass over all string fields recursively. Missing env vars are config-validation errors, not runtime errors.
 
-The transport layer is one interface with one implementation in v1.0. The interface is intentionally narrow so future transports (SMTP, Resend, webhook) can implement it without changes.
+### Transport interface (`core/transport`)
+
+The transport layer is one interface with one implementation in v1.0. The interface is intentionally narrow so future transports (Resend, Mailgun, SMTP outbound, SMTP-ingress shared backend) can implement it without changes.
 
 ```go
-// Message is the canonical form of an email passed to a Transport.
-// All fields are structured data — no transport may interpolate
-// these as raw strings into protocol headers (NFR1).
 type Message struct {
-    From       string
-    To         []string
-    ReplyTo    string
-    Subject    string
-    BodyText   string
+    From     string
+    To       []string
+    ReplyTo  string
+    Subject  string
+    BodyText string
     // BodyHTML is reserved for v2 markdown body support.
 }
 
-// Transport sends a Message. Implementations must return
-// a *TransportError so the handler can classify retries.
 type Transport interface {
     Send(ctx context.Context, msg Message) error
 }
 
-// ErrorClass classifies transport errors for retry policy.
 type ErrorClass int
 
 const (
@@ -218,194 +258,186 @@ const (
 
 type TransportError struct {
     Class   ErrorClass
-    Status  int    // HTTP status if applicable, 0 otherwise
-    Cause   error  // underlying error (network, decode, etc.)
+    Status  int
+    Cause   error
     Message string
 }
-
-func (e *TransportError) Error() string { ... }
-func (e *TransportError) Unwrap() error { return e.Cause }
 ```
 
-### Postmark transport
+The interface and its support types are unchanged from the prior `caddy-formward` design (see brief Status log; the existing `transport.go` and `transport_postmark.go` migrate into `core/transport/` with no semantic changes — only import path updates).
 
-`transport_postmark.go` implements `Transport` against `https://api.postmarkapp.com/email`.
+### Postmark transport (`core/transport/postmark.go`)
 
-Key design decisions:
+Unchanged in behavior from the prior design:
 
-- **No third-party Postmark SDK.** A bespoke HTTP client is ~80 lines and avoids pulling in a dependency we'd have to update.
-- **Headers as JSON fields.** The Postmark request body is `encoding/json`-marshaled from a struct with named fields (`From`, `To`, `ReplyTo`, `Subject`, `TextBody`). At no point does the implementation construct headers via string concatenation — this is the architectural enforcement of NFR1.
-- **API key in `X-Postmark-Server-Token` header.** Set on the request once during construction; never logged (NFR3).
-- **Response classification.** Status code mapping:
-  - `200`/`202` → success
-  - `429` → `ErrRateLimited`
-  - `5xx`, network errors, timeouts → `ErrTransient`
-  - `4xx` (non-429) → `ErrTerminal`
-- **HTTP client.** Reuses a package-level `*http.Client` with a 5s per-request timeout (caller's context handles overall deadline).
+- No third-party Postmark SDK (ADR-1)
+- Headers passed as JSON struct fields (NFR1 enforcement)
+- API key in `X-Postmark-Server-Token` header, never logged (NFR3)
+- Status mapping: 200/202 → success; 429 → ErrRateLimited; 5xx/network → ErrTransient; 4xx (non-429) → ErrTerminal
+- Package-level `*http.Client` with 5s per-request timeout (caller's context handles overall deadline)
 
-### Spam protection
+### HTTP handler (`core/http`)
 
-`spam.go` exposes three independent check functions, each returning a typed result the handler can act on:
+`core.Handler` is a plain `http.Handler` that wraps the per-endpoint pipeline:
 
 ```go
-type spamResult int
+type Handler struct {
+    cfg          EndpointConfig
+    transport    Transport
+    limiter      *ratelimit.Limiter
+    subjectTpl   *template.Template
+    bodyTpl      *template.Template
+    namedFields  map[string]bool
+    logger       *slog.Logger
+}
+
+func New(cfg EndpointConfig, opts ...Option) (*Handler, error) { ... }
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { ... }
+```
+
+Construction (`New`) does the equivalent of the prior `Provision` — resolves placeholders, compiles templates, builds the rate limiter, instantiates the transport. Errors at construction time are fatal config errors; the standalone binary surfaces them via `validate` exit code, the Caddy adapter surfaces them via `caddy validate`.
+
+### Spam protection (`core/spam`)
+
+Three independent check functions, each pure (no logging, no response writing):
+
+```go
+type Result int
 const (
-    spamPass spamResult = iota
-    spamSilentReject    // honeypot — return 200 OK silently
-    spamHardReject      // origin/body — return appropriate status
+    Pass Result = iota
+    SilentReject    // honeypot — return 200 OK silently
+    HardReject      // origin — return appropriate status
 )
 
-func checkHoneypot(r *http.Request, fieldName string) spamResult
-func checkOrigin(r *http.Request, allowed []string) (spamResult, string /* reason */)
-// max-body-size is enforced via http.MaxBytesReader at the handler entry,
-// not as a function call — included here for completeness only.
+func CheckHoneypot(form url.Values, fieldName string) Result
+func CheckOrigin(r *http.Request, allowed []string) (Result, string /* reason */)
+// max-body-size is enforced via http.MaxBytesReader at the handler entry
 ```
 
 The handler runs these in sequence and translates results to HTTP responses.
 
-### Rate limiter
+### Rate limiter (`core/ratelimit`)
 
-`ratelimit.go` implements a token-bucket limiter keyed by client IP.
-
-```go
-type tokenBucket struct {
-    tokens float64
-    last   time.Time
-}
-
-type rateLimiter struct {
-    capacity     float64       // burst size = `count` parameter
-    refillPerSec float64       // capacity / interval seconds
-
-    mu      sync.Mutex
-    buckets *lru.Cache[string, *tokenBucket]  // hashicorp/golang-lru/v2
-}
-
-func (r *rateLimiter) Allow(clientIP string) bool {
-    r.mu.Lock(); defer r.mu.Unlock()
-    bucket, ok := r.buckets.Get(clientIP)
-    if !ok {
-        bucket = &tokenBucket{tokens: r.capacity, last: time.Now()}
-        r.buckets.Add(clientIP, bucket)
-    }
-    // refill based on elapsed time
-    elapsed := time.Since(bucket.last).Seconds()
-    bucket.tokens = math.Min(r.capacity, bucket.tokens + elapsed * r.refillPerSec)
-    bucket.last = time.Now()
-    if bucket.tokens >= 1 {
-        bucket.tokens--
-        return true
-    }
-    return false
-}
-```
-
-LRU cap of 10,000 IPs (NFR6) bounds memory at ~640KB per endpoint (rough — 64 bytes per entry). Eviction of an IP resets its bucket on next request, which is acceptable: an evicted IP that was being limited just gets a fresh budget. Worst case: an attacker rotating through 10,001+ IPs evicts honest IPs' state. That's a botnet attack, which the brief explicitly defers to v3.
-
-### Client IP extraction
+Token-bucket limiter keyed by client IP. Implementation unchanged from the prior design (see ADR-3 — token bucket with LRU, not `golang.org/x/time/rate`):
 
 ```go
-func clientIP(r *http.Request, trustedProxies []netip.Prefix) string {
-    // If the connection's RemoteAddr is in trustedProxies,
-    // walk X-Forwarded-For from right to left, returning the
-    // rightmost IP that is *not* in trustedProxies.
-    // Otherwise return RemoteAddr's IP.
+type Limiter struct {
+    capacity     float64
+    refillPerSec float64
+    mu           sync.Mutex
+    buckets      *lru.Cache[string, *bucket]
 }
+
+func (l *Limiter) Allow(clientIP string) bool { ... }
 ```
 
-`trustedProxies` syntax: a list of CIDRs in the Caddyfile (e.g., `trusted_proxies 10.0.0.0/8 192.168.0.0/16`). Open question #1 in the PRD allows for named presets (`cloudflare`) if budget permits — implemented as a lookup that expands to known CIDR sets.
+Default LRU capacity 10K IPs (NFR6). `clientip.go` extracts the keying IP from RemoteAddr or X-Forwarded-For per the trusted_proxies config.
 
-### Validation
+### Validation (`core/validate`)
 
-`validate.go` exposes:
+Pure functions:
 
 ```go
-func validateRequired(form url.Values, required []string) []string {
-    // returns list of field names that are missing or empty
-}
-
-func validateEmail(value string) bool {
-    // basic syntactic check via net/mail.ParseAddress
-}
+func RequiredFields(form url.Values, required []string) []string
+func EmailFormat(value string) bool
 ```
 
-Both functions are pure — no logging, no response writing. The handler uses their returns to construct 422 responses.
+No logging, no response writing — the handler uses returns to construct 422 responses.
 
-### Templating
+### Templating (`core/template`)
 
-`template.go` exposes:
+Subject and body rendering with custom-fields passthrough. The "named fields" set (required + email field + honeypot + fields referenced in templates) is computed at config-load time via Go template `Tree.Root.Nodes` walk, cached in the Handler.
 
-```go
-type renderInput struct {
-    Form     url.Values        // raw form values
-    Named    map[string]string // single-value subset of fields named in config
-}
-
-func (m *Module) renderSubject(form url.Values) (string, error)
-func (m *Module) renderBody(form url.Values, namedFields map[string]bool) (string, error)
-```
-
-`renderBody` adds the custom-fields passthrough block: any form field NOT in `namedFields` (the union of `required`, `email_field`, `honeypot`, and any field referenced in templates) is appended to the rendered body in a sorted block:
-
+Custom-fields passthrough format unchanged from prior design:
 ```
 [rendered body template output]
 
 Additional fields:
   company: Acme Corp
   source: HN
-
 ```
 
-Detection of "fields referenced in templates" uses Go template's `Tree.Root.Nodes` walk to collect field references at parse time, cached in `Module`.
-
-### Response handling
-
-`response.go`:
+### Response handling (`core/response`)
 
 ```go
-type errorResponse struct {
+type ErrorResponse struct {
     Error  string            `json:"error"`
     Code   string            `json:"code"`
-    Fields map[string]string `json:"fields,omitempty"`  // for 422
+    Fields map[string]string `json:"fields,omitempty"`
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) error
-func writeRedirect(w http.ResponseWriter, r *http.Request, url string) error
-
-// Negotiate decides JSON vs redirect based on Accept header
-// and configured redirect URLs.
-func (m *Module) negotiate(r *http.Request) responseMode
+func WriteJSON(w http.ResponseWriter, status int, body any) error
+func WriteRedirect(w http.ResponseWriter, r *http.Request, url string) error
+func Negotiate(r *http.Request, hasRedirects bool) Mode
 ```
 
-Content negotiation logic:
-1. If neither `redirect_success` nor `redirect_error` is configured → JSON
-2. Else if `Accept: application/json` is preferred over `text/html` → JSON
-3. Else → redirect
+Negotiation logic: if no redirect URLs configured → JSON; else if `Accept: application/json` preferred → JSON; else redirect.
 
-### Logging
+### Logging (`core/log`)
 
-`logging.go` wraps the Caddy logger with structured-field helpers:
+Wraps `log/slog` (stdlib) with structured-field helpers. The standalone binary configures slog with a JSON handler at INFO by default; the Caddy adapter passes Caddy's logger through a small slog→zap shim.
 
 ```go
-type logCtx struct {
-    submissionID uuid.UUID
-    endpoint     string
-    transport    string  // "postmark"
-    startTime    time.Time
+type Ctx struct {
+    SubmissionID uuid.UUID
+    Endpoint     string
+    Transport    string
+    StartTime    time.Time
 }
 
-func (m *Module) logReceived(ctx logCtx, form url.Values)
-func (m *Module) logSent(ctx logCtx)
-func (m *Module) logRetry(ctx logCtx, err error)
-func (m *Module) logFailed(ctx logCtx, err error, payload url.Values)
-func (m *Module) logSpamBlocked(ctx logCtx, reason string)
-func (m *Module) logRateLimited(ctx logCtx, clientIP string)
-func (m *Module) logValidationFailed(ctx logCtx, fields []string)
+func (l *Logger) Received(ctx Ctx, form url.Values)
+func (l *Logger) Sent(ctx Ctx)
+func (l *Logger) Retry(ctx Ctx, err error)
+func (l *Logger) Failed(ctx Ctx, err error, payload url.Values)
+func (l *Logger) SpamBlocked(ctx Ctx, reason string)
+func (l *Logger) RateLimited(ctx Ctx, clientIP string)
+func (l *Logger) ValidationFailed(ctx Ctx, fields []string)
 ```
 
-Every log line includes: `submission_id`, `endpoint`, `transport`, `latency_ms` (calculated from `startTime`). API keys are never logged — the transport never receives the key as a separate logged value, only as an HTTP header set during request construction (NFR3).
+Every log line includes `submission_id`, `endpoint`, `transport`, `latency_ms`. API keys never appear in any log path.
 
-`logFailed` includes the full payload only if `log_failed_submissions` is true; otherwise omits the form values and logs only field names.
+`Failed` includes the full payload only if `log_failed_submissions` is true; otherwise omits form values.
+
+## Caddy adapter (`caddy/`)
+
+Thin wrapper over `core`. Implementation:
+
+```go
+type Module struct {
+    // Caddyfile-parsed fields, mirror EndpointConfig
+    Path                 string             `json:"path,omitempty"`
+    To                   []string           `json:"to,omitempty"`
+    // ... (all fields from core.EndpointConfig)
+    
+    // Runtime
+    handler *corehttp.Handler
+    logger  *zap.Logger
+}
+
+func (Module) CaddyModule() caddy.ModuleInfo { ... } // http.handlers.posthorn
+
+func (m *Module) UnmarshalCaddyfile(d *caddyfile.Dispenser) error { ... }
+
+func (m *Module) Provision(ctx caddy.Context) error {
+    cfg := corecfg.EndpointConfig{
+        // translate Caddyfile-parsed fields into core's struct
+    }
+    handler, err := corehttp.New(cfg, corehttp.WithLogger(slogFromZap(ctx.Logger(m))))
+    if err != nil { return err }
+    m.handler = handler
+    return nil
+}
+
+func (m *Module) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+    if !pathMatches(m.Path, r.URL.Path) {
+        return next.ServeHTTP(w, r)
+    }
+    m.handler.ServeHTTP(w, r)
+    return nil
+}
+```
+
+The adapter contributes ~150 LOC of pure translation. All business logic lives in core.
 
 ## Threat → defense → code mapping
 
@@ -413,19 +445,21 @@ This is the load-bearing artifact for security review. Every in-scope threat fro
 
 | Threat | Defense | Code | Tests |
 |---|---|---|---|
-| Drive-by scraper bots | Honeypot field | `spam.go::checkHoneypot` | `spam_test.go::TestHoneypot_*` |
-| Direct-POST bots that skip the form page | Origin/Referer with fail-closed when configured | `spam.go::checkOrigin` | `spam_test.go::TestOrigin_AllowedDeniedMissingBoth` |
-| Basic targeted abuse | Token bucket rate limit, proxy-aware | `ratelimit.go::Allow`, `clientIP` | `ratelimit_test.go::TestTokenBucket_*`, `TestClientIP_TrustedProxies` |
-| Postmark quota burn | Rate limit + max body size | `ratelimit.go` + `http.MaxBytesReader` in handler | as above + `formward_test.go::TestBodySizeLimit` |
-| Email header injection | All header fields passed as JSON struct fields, never string-concat | `transport_postmark.go::Send` (struct → `json.Marshal`) | `transport_postmark_test.go::TestNoHeaderInjection_*` (CRLF in From, To, Subject, ReplyTo) |
+| Drive-by scraper bots | Honeypot field | `core/spam/spam.go::CheckHoneypot` | `core/spam/spam_test.go::TestHoneypot_*` |
+| Direct-POST bots that skip the form page | Origin/Referer with fail-closed | `core/spam/spam.go::CheckOrigin` | `core/spam/spam_test.go::TestOrigin_*` |
+| Basic targeted abuse | Token bucket rate limit, proxy-aware | `core/ratelimit/ratelimit.go::Allow`, `core/ratelimit/clientip.go` | `core/ratelimit/ratelimit_test.go` |
+| Postmark quota burn | Rate limit + max body size | `core/ratelimit/` + `http.MaxBytesReader` in handler | as above + `core/http/handler_test.go::TestBodySizeLimit` |
+| Email header injection | Header fields passed as JSON struct fields, never string-concat | `core/transport/postmark.go::Send` (struct → `json.Marshal`) | `core/transport/postmark_test.go::TestNoHeaderInjection_*` |
+| API key theft from logs | Key set in HTTP header at construction time, never passed to logger | `core/transport/postmark.go::Send`, `core/log/*` | `core/log/log_test.go::TestNoAPIKeyInLogs` |
 
 For threats explicitly out of scope, this table also documents the *non*-defense:
 
 | Out-of-scope threat | Disposition |
 |---|---|
+| SMTP-ingress threats (open relay, MX spoofing, RCPT bombing) | v1.2 SMTP ingress will add: AUTH PLAIN/LOGIN, RCPT recipient cap, sender allowlist, body size cap. Architecture must not foreclose this — see "Forward compatibility" below. |
 | Botnet spam (many low-rate IPs) | No v1.0 defense; LRU eviction at 10K IPs gracefully degrades but does not protect. v3 captcha/PoW is the planned response. |
-| DDoS / Layer 7 attacks | CDN's responsibility; module trusts upstream proxy/load balancer to absorb. Documented in README. |
-| API key theft | Operator concern; mitigated by `{env.VAR}` config + NFR3 (key never logged). Documented in README. |
+| DDoS / Layer 7 attacks | CDN's responsibility; gateway trusts upstream proxy/load balancer to absorb. Documented in README. |
+| API key theft from misconfigured deployment | Operator concern; mitigated by `${env.VAR}` config + NFR3 (key never logged). Documented in README. |
 
 ## Concurrency and state
 
@@ -433,7 +467,7 @@ For threats explicitly out of scope, this table also documents the *non*-defense
 
 Each `ServeHTTP` invocation operates on:
 - The request and response writer (request-scoped, no shared mutation)
-- A locally-allocated `logCtx` with a fresh UUID
+- A locally-allocated `log.Ctx` with a fresh UUID
 - Locally-rendered subject and body strings
 - A local `Message` passed to `Transport.Send`
 
@@ -441,183 +475,273 @@ No request-scoped state is shared across requests.
 
 ### Shared state
 
-The module holds three pieces of shared state, all populated in `Provision` and immutable thereafter:
+Each `core.Handler` holds three pieces of shared state, all populated at construction time and immutable thereafter:
 
 | State | Concurrency strategy |
 |---|---|
 | `*template.Template` (subject and body) | Go's `template.Template` is safe for concurrent execution after parse; no extra locking needed. |
 | `Transport` (Postmark client) | Wraps a single `*http.Client`. Standard library guarantees `*http.Client` is safe for concurrent use. The transport itself is stateless beyond the client and API key. |
-| `*rateLimiter` | Mutex-guarded; one mutex per limiter, held only during the per-IP bucket update. Contention is bounded by request rate. |
+| `*ratelimit.Limiter` | Mutex-guarded; one mutex per limiter, held only during the per-IP bucket update. Contention is bounded by request rate. |
 
-No goroutines are spawned. No channels are used. The module is request-driven and stateless beyond the rate limiter cache.
+No goroutines are spawned per request. The standalone `cmd/posthorn` runs `http.Server` which spawns goroutines per connection; the rate limiter and template are the only shared state across those goroutines.
 
 ## Dependencies
 
-### Production
+### Core (production)
 
 | Dependency | Purpose | Justification |
 |---|---|---|
-| `github.com/caddyserver/caddy/v2` | Module framework | Required by definition |
-| `go.uber.org/zap` | Structured logging | Comes with Caddy; use it directly |
+| `github.com/BurntSushi/toml` | TOML config parsing | The standard Go TOML library; mature, single-purpose |
 | `github.com/google/uuid` | Submission ID generation | Standard, single-purpose, ~200 LOC |
 | `github.com/hashicorp/golang-lru/v2` | LRU cache for rate limiter | Battle-tested, type-parameterized in v2 |
 
-### Test-only
+### Core (test-only)
 
 | Dependency | Purpose |
 |---|---|
 | Standard library `testing` | Test framework |
 | Standard library `net/http/httptest` | Mock Postmark API server |
 
+### Caddy adapter (production)
+
+| Dependency | Purpose |
+|---|---|
+| `github.com/craigmccaskill/posthorn` | Core gateway (the whole point of the adapter) |
+| `github.com/caddyserver/caddy/v2` | Module framework |
+| `go.uber.org/zap` | Structured logging (Caddy provides) |
+
 ### Explicitly NOT pulled in
 
-- Postmark SDKs (e.g., `mrz1836/postmark`) — bespoke client is small enough
-- Validation libraries (e.g., `go-playground/validator`) — v1 needs are simple (required + email format), stdlib `net/mail` suffices
-- Rate-limiting libraries (e.g., `golang.org/x/time/rate`) — token bucket is ~30 lines and ours needs LRU eviction which `x/time/rate` lacks
+- Postmark SDKs (ADR-1)
+- Validation libraries — stdlib `net/mail` suffices for v1.0
+- Rate-limiting libraries (ADR-3)
 - Templating engines beyond stdlib `text/template`
+- HTTP frameworks (gin, echo, chi, etc.) — stdlib `net/http` is sufficient
+- Logging libraries beyond stdlib `log/slog`
+- Cobra/urfave/cli for CLI — flag stdlib package suffices for `serve`/`validate`
 
-This list is conservative on purpose: every dependency is a v1.1+ liability. Adding one requires documented justification.
+This list is conservative on purpose: every dependency is a v1.1+ liability.
 
 ## Test architecture
 
-Test files are co-located with the source they test (`spam.go` ↔ `spam_test.go`). Test helpers and fixtures live in `testhelpers_test.go` (a single `_test.go` file is per-package shared across all tests).
+Test files are co-located with the source they test (`spam.go` ↔ `spam_test.go`).
 
 ### Mock Postmark server
 
-Transport tests use `httptest.NewServer` with handler stubs:
+Transport tests use `httptest.NewServer` with handler stubs. The Postmark transport accepts a `BaseURL` config value (default `https://api.postmarkapp.com`) so tests can point it at the mock. Production config never sets `BaseURL`.
 
-```go
-func mockPostmark(t *testing.T, status int, body string) *httptest.Server {
-    return httptest.NewServer(http.HandlerFunc(func(w, r) {
-        w.WriteHeader(status)
-        w.Write([]byte(body))
-    }))
-}
-```
+### Header injection tests (NFR2)
 
-The transport accepts a `BaseURL` config value (default `https://api.postmarkapp.com`) so tests can point it at the mock. Production config never sets `BaseURL`.
-
-### Header injection tests
-
-NFR2 requires explicit injection-payload coverage. Test cases as a table:
+Required test cases as a table (carries over from prior architecture; the payloads are unchanged):
 
 ```go
 var injectionPayloads = []struct {
     name  string
-    field string  // which field to inject into
+    field string
     value string
 }{
     {"crlf_bcc_in_from",     "from",     "attacker@evil.com\r\nBcc: target@victim.com"},
     {"crlf_bcc_in_subject",  "subject",  "Hello\r\nBcc: target@victim.com"},
     {"crlf_in_replyto",      "reply_to", "x@x.com\r\nBcc: target@victim.com"},
-    {"unicode_crlf",         "subject",  "Hello
-Bcc: target@victim.com"},
+    {"unicode_crlf",         "subject",  "Hello\u000ABcc: target@victim.com"},
     {"smuggled_header",      "name",     "Jane\r\nX-Spoof: yes"},
 }
 ```
 
-For each payload, the test sends a submission, captures the outgoing JSON to the mock Postmark server, and asserts:
-1. The injected CRLF sequence does not appear as a JSON-level header in the marshaled request
-2. The literal string is preserved as data within the field it was injected into (no silent truncation or sanitization that could mask the issue elsewhere)
+For each payload: send a submission, capture the outgoing JSON to the mock Postmark server, assert (1) the injected CRLF sequence does not appear as a JSON-level header in the marshaled request and (2) the literal string is preserved as data within the field it was injected into.
+
+### Cross-deployment parity tests
+
+A test file at the workspace root level (or a dedicated `tests/parity/` Go module) constructs a `core.Handler` two ways:
+
+1. From a TOML config file (standalone deployment path)
+2. From a Caddyfile fragment routed through the adapter's `UnmarshalCaddyfile` + `Provision` (Caddy deployment path)
+
+For the same operator-equivalent input, both Handlers must produce byte-identical outbound JSON to the mock Postmark server. This is the contract that says "both deployment shapes are the same product."
 
 ### CI matrix
 
-Single Linux + Go 1.23 job. No matrix builds for v1.0 — Caddy's compatibility floor is well-defined and we don't need to test Windows/macOS for a Linux-targeted Docker deploy.
+Single Linux + Go 1.25 job per module. `go test ./...` and `go vet ./...` in both `core/` and `caddy/`. `go work sync` validates the workspace.
 
 ## Build and distribution
 
-### xcaddy build
+### Standalone binary
 
+```bash
+go install github.com/craigmccaskill/posthorn/cmd/posthorn@latest
 ```
-xcaddy build --with github.com/craigmccaskill/caddy-formward
-```
 
-This is the canonical install path documented in the README. It produces a `caddy` binary with the module compiled in.
+Produces a single static binary. No CGO. Single-file deployment.
 
-### Dockerfile
+### Standalone Docker image
 
 Multi-stage:
 
 ```dockerfile
-FROM caddy:2.9-builder AS builder
-RUN xcaddy build \
-    --with github.com/craigmccaskill/caddy-formward
+FROM golang:1.25-alpine AS builder
+WORKDIR /src
+COPY core/ ./core/
+COPY go.work go.work.sum ./
+WORKDIR /src/core
+RUN CGO_ENABLED=0 go build -o /out/posthorn ./cmd/posthorn
 
-FROM caddy:2.9-alpine
-COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+FROM gcr.io/distroless/static:nonroot
+COPY --from=builder /out/posthorn /usr/local/bin/posthorn
+USER nonroot
+ENTRYPOINT ["/usr/local/bin/posthorn", "serve"]
+CMD ["--config", "/etc/posthorn/config.toml"]
 ```
 
-Image is published to GitHub Container Registry on tagged releases.
+Multi-arch via `docker buildx` in the release workflow: `linux/amd64` and `linux/arm64`. Image at `ghcr.io/craigmccaskill/posthorn:v1.0.0` and `:latest`.
+
+### Caddy adapter
+
+```bash
+xcaddy build --with github.com/craigmccaskill/posthorn/caddy
+```
+
+Produces a Caddy binary with the module compiled in. Operators who want both Caddy and Posthorn in one process build with this command and configure the form-handler endpoints via Caddyfile.
 
 ### Release artifacts
 
 For each tagged release (v1.0.0+):
-- GitHub Release with hand-written notes summarizing changes
-- Docker image at `ghcr.io/craigmccaskill/caddy-formward:v1.0.0` and `:latest`
-- No pre-built binaries — `xcaddy` is the supported install path because it produces a Caddy build with whatever else the operator wants compiled in
+- GitHub Release with hand-written notes
+- Multi-arch Docker image at `ghcr.io/craigmccaskill/posthorn`
+- No pre-built binaries — `go install` and Docker are the supported install paths
+- Caddy adapter modules-page submission within 7 days (R3 mitigation)
 
 ### Modules-page submission
 
-Within 7 days of v1.0.0 (R3 mitigation): file a PR against `github.com/caddyserver/website` adding caddy-formward to the modules listing. The submission requires a working module-info JSON entry; the entry will be drafted in `docs/modules-page-entry.json` for review before submission.
+PR against `github.com/caddyserver/website` adding the Caddy adapter to the modules listing. Entry drafted in `docs/modules-page-entry.json` for review before submission.
+
+## Forward compatibility (v1.x roadmap)
+
+Architectural commitments that protect future scope:
+
+### v1.1 (more transports)
+
+The `Transport` interface accepts arbitrary configurations via `TransportConfig.Settings map[string]any`. Adding Resend, Mailgun, SES requires new files in `core/transport/` (e.g., `resend.go`, `mailgun.go`) and a registration step in the config loader. Zero changes to handler logic, zero changes to Caddy adapter, zero breaking config changes.
+
+Each new transport must:
+- Implement `Transport.Send`
+- Return `*TransportError` with correct `ErrorClass`
+- Pass the header-injection test suite (NFR2 applies to every transport)
+- Pass the no-key-in-logs test suite (NFR3 applies to every transport)
+
+### v1.2 (SMTP ingress)
+
+This is the architectural fork that requires deliberate forward-compatibility. The commitment:
+
+- The `Message` struct is the boundary between ingress and egress. It does not change. SMTP ingress parses a MIME message into a `Message`; HTTP form ingress builds a `Message` from form fields + templates. Egress doesn't care which.
+- An `Ingress` interface will be defined in v1.2 to abstract over "thing that produces Messages." HTTP form ingress is the implicit first instance in v1.0; SMTP ingress is the second in v1.2.
+- Config gets a new top-level section: `smtp_listener:` (parallel to `endpoints:`). Existing `endpoints:` config remains valid and unchanged.
+- The `cmd/posthorn` binary gains a new code path that starts both an HTTP listener (if `endpoints` are configured) and an SMTP listener (if `smtp_listener` is configured). Both share the same logger, transport pool, and graceful-shutdown machinery.
+- The Caddy adapter does not gain SMTP ingress — different deployment shape (the standalone binary is the natural sidecar for an app emitting SMTP, not a Caddy module).
+
+The threat model expansion for v1.2 (open relay, RCPT bombing, etc.) is deferred to that version's spec rewrite. The architectural commitment here is that v1.0 does not foreclose those defenses: the spam package (`core/spam`) is HTTP-form-specific and a separate `core/smtpspam` package can land in v1.2 without disturbing it.
+
+### v2 (persistent state)
+
+Adds `core/storage/` for SQLite. Send queue with retry across restarts. The `Transport.Send` interface stays as the synchronous primitive; an outer queue layer wraps it. Existing v1.x code paths continue to work unchanged.
 
 ## Architectural decisions log
 
-Worth recording explicitly, in case future-you wonders.
+**ADR-1: No Postmark SDK.** A third-party SDK adds a dependency we'd have to track and update for every Postmark API change. The bespoke client is ~80 lines, has zero runtime overhead, and gives complete control over error classification. Reconsider in v1.1+ only if 3+ HTTP API transports duplicate enough code to warrant a shared SDK abstraction.
 
-**ADR-1: No Postmark SDK.** A third-party SDK adds a dependency we'd have to track and update for every Postmark API change. The bespoke client is ~80 lines, has zero runtime overhead, and gives us complete control over error classification (which is the whole point of the transport interface). Reconsider in v1.1+ only if we add 3+ HTTP API transports and the duplication becomes painful.
+**ADR-2 (revised): Two-module workspace, internal sub-packages within `core/`.** The prior `caddy-formward` design committed to a flat package because it was a single Caddy module with a small surface. Posthorn's expanded scope (standalone binary + adapter, plus future SMTP ingress) makes that flat layout the wrong call: code shared between `cmd/posthorn` and the Caddy adapter benefits from package boundaries, and the SMTP-ingress addition in v1.2 needs a place to land that doesn't disturb HTTP-form code. The two-module workspace also enforces ADR-6 architecturally: the core's `go.mod` does not list Caddy as a dependency, so any code that accidentally imports Caddy fails compilation immediately.
 
-**ADR-2: Flat package, not internal sub-packages.** The v1.0 surface is small enough that splitting `internal/spam`, `internal/transport`, etc., would be ceremony without benefit. A flat package is easier to navigate for contributors and matches the convention of most Caddy modules. Revisit in v2 when SQLite adds 1000+ LOC of storage code.
+**ADR-3: Token bucket with LRU, not `golang.org/x/time/rate`.** `x/time/rate` is excellent but doesn't bound memory — every distinct key (IP) holds a `Limiter` forever. We need LRU eviction at 10K IPs (NFR6) which requires rolling our own. The implementation is ~30 lines and well-tested. Unchanged from prior design.
 
-**ADR-3: Token bucket with LRU, not `golang.org/x/time/rate`.** `x/time/rate` is excellent but doesn't bound memory — every distinct key (IP) holds a `Limiter` forever. We need LRU eviction at 10K IPs (NFR6) which requires rolling our own. The implementation is ~30 lines and well-tested.
+**ADR-4: `*bool` for `LogFailedSubmissions`.** A pointer lets us distinguish "operator omitted the field" (default true) from "operator explicitly set false." Pointer-bool is a common Go config pattern despite the awkwardness. Unchanged from prior design.
 
-**ADR-4: `*bool` for `LogFailedSubmissions`.** A pointer lets us distinguish "operator omitted the field" (default true) from "operator explicitly set false." A plain `bool` defaults to false on omit, which would silently change behavior between versions if we ever changed the default. Pointer-bool is a common Go config pattern despite the awkwardness.
+**ADR-5: Synchronous send, not async with queue.** v1.0 has no persistent storage, so an async queue would be lost on restart. The brief commits to "log on terminal failure" as the recovery mechanism, which works only if the failure is observed in the request log. v2 brings SQLite + async queue together. Unchanged from prior design.
 
-**ADR-5: Synchronous send, not async with queue.** v1.0 has no persistent storage, so an async queue would be lost on restart. The brief commits to "log on terminal failure" as the recovery mechanism, which works only if the failure is observed in the request log. v2 brings SQLite + async queue together, at which point this decision flips.
+**ADR-6: Core has zero Caddy dependency. Adapter imports core; never the reverse.** This is the load-bearing decision that makes the standalone-with-adapter architecture work. The two-module workspace enforces it: `core/go.mod` does not import Caddy, so accidentally adding a Caddy import in core breaks the build. The Caddy adapter is a sibling consumer of core, not its frame. This decision is what makes v1.2 SMTP ingress (which has nothing to do with Caddy) possible without forking.
+
+**ADR-7: Standalone is the primary deployment shape; Caddy adapter is optional.** The Caddy adapter is named in v1.0 scope because the secondary audience (Caddy users) overlaps with the author. But the headline distribution is the standalone Docker image. Documentation, CI, and release infrastructure put the standalone path first; the adapter is a sibling module that gets equal *correctness* attention but secondary *marketing* attention. This is the structural decision that follows from the project brief's audience reordering — primary audience is now "self-hosters on cloud-with-blocked-SMTP," not "Caddy users."
+
+If you find yourself wanting to deviate from any ADR, update this document with the new decision and rationale before changing code.
 
 ## Open architectural questions
 
 These are implementation decisions deferred from the brief and PRD that affect code organization. Each has a recommended answer; final decision is made during the relevant story.
 
-1. **`trusted_proxies` syntax — CIDR-only or with named presets (`cloudflare`)?**
-   Recommendation: CIDR-only in v1.0; named presets in v1.1 if there's user demand. Decided during Story 3.2.
+1. **Logging library: `log/slog` (stdlib) vs `zap` (Caddy's choice).** Recommendation: `slog` in core (zero deps, stdlib), the Caddy adapter pipes Caddy's zap logger through a small `slog.Handler` shim. Decided during Story 4.2.
 
-2. **Rate limit configuration syntax — single line or sub-block?**
-   Recommendation: single line (`rate_limit 5 1m`). Sub-block is nicer if we add `burst`, `key_by_path`, etc., but those are post-v1. Decided during Story 3.2.
+2. **`trusted_proxies` syntax in v1.0.** Decision: CIDR-only. Named presets (`cloudflare`, etc.) are planned for v1.1 (see brief §"Post-MVP Vision"). Confirmed during Story 3.2.
 
-3. **Body template — file path vs inline detection.**
-   Recommendation: heuristic — if the value contains `{{` it's inline; otherwise it's a file path. Reject ambiguity at validation time. Decided during Story 4.2.
+3. **Body template — file path vs inline detection.** Recommendation: heuristic — if the value contains `{{` it's inline; otherwise it's a file path. Reject ambiguity at validation time. Decided during Story 2.4.
 
-4. **Response JSON schema versioning.**
-   Recommendation: don't version v1.0 responses. Add a top-level `"version": "1"` field if we ever change the schema in a breaking way (post-v1). Decided during Story 5.1.
+4. **Response body for 502 terminal failures.** Recommendation: 502 response body says "Submission could not be delivered. Please try again later." with no detail. Detail is in the operator's logs. Avoiding leaking whether the failure was config (4xx from upstream) vs runtime (network) to a potential attacker. Decided during Story 4.1.
 
-5. **Error message verbosity for terminal failures.**
-   Recommendation: 502 response body says "Submission could not be delivered. Please try again later." with no detail. Detail is in the operator's logs. Avoiding leaking whether the failure was config (4xx from Postmark) vs runtime (network) to a potential attacker. Decided during Story 6.1.
+## Appendix: TOML grammar reference
+
+For Story 2.1 implementation. Single-endpoint shape:
+
+```toml
+[[endpoints]]
+path = "/api/contact"
+to = ["craig@example.com"]
+from = "Contact Form <noreply@example.com>"
+
+trusted_proxies = ["10.0.0.0/8", "192.168.0.0/16"]
+honeypot = "_gotcha"
+allowed_origins = ["https://example.com"]
+max_body_size = "32KB"
+
+required = ["name", "email", "message"]
+email_field = "email"     # default: "email"
+
+subject = "Contact from {{.name}}"
+body = "templates/contact.txt"   # file path; inline allowed if value contains "{{"
+
+log_failed_submissions = true
+
+redirect_success = "/thank-you"
+redirect_error = "/contact?error=true"
+
+[endpoints.transport]
+type = "postmark"
+
+[endpoints.transport.settings]
+api_key = "${env.POSTMARK_API_KEY}"
+# base_url = "https://api.postmarkapp.com"  # test-only, undocumented
+
+[endpoints.rate_limit]
+count = 5
+interval = "1m"
+
+[logging]
+level = "info"
+format = "json"   # only json supported in v1.0
+```
+
+For multiple endpoints, repeat the `[[endpoints]]` block. Each subsequent `[endpoints.transport]`, `[endpoints.transport.settings]`, and `[endpoints.rate_limit]` table applies to the most recent `[[endpoints]]` entry.
 
 ## Appendix: Caddyfile grammar reference
 
-For Story 1.2 implementation:
+For Story 6.2 implementation. Mirrors the TOML schema with Caddyfile conventions:
 
 ```
-formward <path> {
+posthorn <path> {
     to <email> [<email>...]
     from <email>
     
     transport postmark {
         api_key <token>           # supports {env.VAR}
-        # base_url <url>          # test-only, undocumented
     }
     
     rate_limit <count> <interval>
     trusted_proxies <cidr> [<cidr>...]
     honeypot <field_name>
     allowed_origins <url> [<url>...]
-    max_body_size <size>          # supports KB/MB suffix
+    max_body_size <size>
     
     required <field> [<field>...]
-    email_field <field_name>      # default: "email"
+    email_field <field_name>
     
-    subject <template>            # inline string
-    body <path>                   # file path (heuristic per open-Q 3)
+    subject <template>
+    body <path>
     
     log_failed_submissions <bool>
     
@@ -626,4 +750,4 @@ formward <path> {
 }
 ```
 
-The grammar is deliberately conservative: every directive is a single-line key-value pair except `transport` which is a sub-block (extensible — SMTP and Resend will use the same pattern).
+The grammar is deliberately conservative: every directive is a single-line key-value pair except `transport` which is a sub-block (extensible — Resend, Mailgun, etc., will use the same pattern in v1.1).
