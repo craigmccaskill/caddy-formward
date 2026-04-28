@@ -66,12 +66,32 @@ func TestNew_NilTransport(t *testing.T) {
 }
 
 func TestNew_OK(t *testing.T) {
-	h, err := gateway.New(config.EndpointConfig{}, &recordingTransport{})
+	cfg := config.EndpointConfig{
+		Subject: "S",
+		Body:    "B",
+	}
+	h, err := gateway.New(cfg, &recordingTransport{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	if h == nil {
 		t.Fatal("New: returned nil handler with nil error")
+	}
+}
+
+func TestNew_EmptyBody_Error(t *testing.T) {
+	// Templating requires a non-empty body. Surfaces at construction.
+	_, err := gateway.New(config.EndpointConfig{Subject: "S"}, &recordingTransport{})
+	if err == nil {
+		t.Fatal("expected error for empty body")
+	}
+}
+
+func TestNew_TemplateParseError(t *testing.T) {
+	cfg := config.EndpointConfig{Subject: "Bad: {{.x", Body: "B"}
+	_, err := gateway.New(cfg, &recordingTransport{})
+	if err == nil {
+		t.Fatal("expected parse error")
 	}
 }
 
@@ -224,13 +244,49 @@ func TestHandler_POST_TransportReceivesConfiguredFields(t *testing.T) {
 	if len(msg.To) != 1 || msg.To[0] != "to@example.com" {
 		t.Errorf("To = %v, want [to@example.com]", msg.To)
 	}
-	// Subject and BodyText pass through verbatim in Story 2.2; templating
-	// (Story 2.4) will replace these with rendered output.
+	// Subject and Body templates have no template vars, so they render
+	// to literal text. Form fields not named in templates appear in the
+	// custom-fields passthrough block (Story 2.4 behavior).
 	if msg.Subject != "Subject text" {
 		t.Errorf("Subject = %q", msg.Subject)
 	}
-	if msg.BodyText != "Body text" {
-		t.Errorf("BodyText = %q", msg.BodyText)
+	if !strings.Contains(msg.BodyText, "Body text") {
+		t.Errorf("BodyText missing template output: %q", msg.BodyText)
+	}
+	if !strings.Contains(msg.BodyText, "name: craig") {
+		t.Errorf("BodyText missing passthrough name field: %q", msg.BodyText)
+	}
+	if !strings.Contains(msg.BodyText, "message: hello") {
+		t.Errorf("BodyText missing passthrough message field: %q", msg.BodyText)
+	}
+}
+
+// TestHandler_TemplateInterpolation verifies that subject/body templates
+// receive form fields and render them.
+func TestHandler_TemplateInterpolation(t *testing.T) {
+	rt := &recordingTransport{}
+	cfg := config.EndpointConfig{
+		To:      []string{"to@example.com"},
+		From:    "from@example.com",
+		Subject: "Contact from {{.name}}",
+		Body:    "Message: {{.message}}",
+	}
+	h, err := gateway.New(cfg, rt)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	h.ServeHTTP(httptest.NewRecorder(), urlencodedRequest("name=craig&message=hello+there"))
+
+	if len(rt.sent) != 1 {
+		t.Fatalf("expected one Send call, got %d", len(rt.sent))
+	}
+	msg := rt.sent[0]
+	if msg.Subject != "Contact from craig" {
+		t.Errorf("Subject = %q, want interpolation", msg.Subject)
+	}
+	if !strings.HasPrefix(msg.BodyText, "Message: hello there") {
+		t.Errorf("BodyText body section = %q", msg.BodyText)
 	}
 }
 

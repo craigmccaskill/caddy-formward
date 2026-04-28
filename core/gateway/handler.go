@@ -22,6 +22,7 @@ import (
 
 	"github.com/craigmccaskill/posthorn/config"
 	"github.com/craigmccaskill/posthorn/response"
+	"github.com/craigmccaskill/posthorn/template"
 	"github.com/craigmccaskill/posthorn/transport"
 	"github.com/craigmccaskill/posthorn/validate"
 )
@@ -38,6 +39,7 @@ const defaultEmailField = "email"
 type Handler struct {
 	cfg        config.EndpointConfig
 	transport  transport.Transport
+	renderer   *template.Renderer
 	emailField string // resolved at construction (cfg.EmailField or default)
 }
 
@@ -48,9 +50,10 @@ type Option func(*Handler)
 
 // New constructs a Handler from a parsed endpoint config and a transport.
 //
-// Returns an error if the transport is nil. The caller is expected to have
-// validated the config (e.g., via [config.Config.Validate]); New does not
-// re-validate the config but does check the explicit dependencies.
+// Returns an error if the transport is nil, if the template parser fails,
+// or if the body template references a missing file. The caller is
+// expected to have validated the config (e.g., via [config.Config.Validate])
+// for structural correctness; New surfaces template-specific failures here.
 func New(cfg config.EndpointConfig, t transport.Transport, opts ...Option) (*Handler, error) {
 	if t == nil {
 		return nil, errors.New("gateway: transport is nil")
@@ -59,9 +62,27 @@ func New(cfg config.EndpointConfig, t transport.Transport, opts ...Option) (*Han
 	if emailField == "" {
 		emailField = defaultEmailField
 	}
+
+	// Build the reserved-names set for the template renderer. These fields
+	// are intentionally excluded from the custom-fields passthrough block
+	// in the rendered body — operators have already accounted for them in
+	// their config (FR13).
+	reserved := make([]string, 0, len(cfg.Required)+2)
+	reserved = append(reserved, cfg.Required...)
+	reserved = append(reserved, emailField)
+	if cfg.Honeypot != "" {
+		reserved = append(reserved, cfg.Honeypot)
+	}
+
+	renderer, err := template.NewRenderer(cfg.Subject, cfg.Body, reserved)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: %w", err)
+	}
+
 	h := &Handler{
 		cfg:        cfg,
 		transport:  t,
+		renderer:   renderer,
 		emailField: emailField,
 	}
 	for _, opt := range opts {
@@ -113,13 +134,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the Message. Subject and Body are literal config values for now;
-	// Go template rendering with form-field interpolation lands in Story 2.4.
+	// Render subject and body templates against form fields (FR12, FR13).
+	// Custom-fields passthrough block is appended automatically inside
+	// renderer.RenderBody for any form keys not named in templates or
+	// reserved (required + email + honeypot).
+	subject, err := h.renderer.RenderSubject(r.Form)
+	if err != nil {
+		// Template execution errors at request time are extremely rare with
+		// missingkey=zero (the only common runtime error path is method
+		// calls on form values, which we don't expose). Still: fail-safe.
+		http.Error(w, "submission could not be processed", http.StatusInternalServerError)
+		return
+	}
+	body, err := h.renderer.RenderBody(r.Form)
+	if err != nil {
+		http.Error(w, "submission could not be processed", http.StatusInternalServerError)
+		return
+	}
+
 	msg := transport.Message{
 		From:     h.cfg.From,
 		To:       h.cfg.To,
-		Subject:  h.cfg.Subject,
-		BodyText: h.cfg.Body,
+		Subject:  subject,
+		BodyText: body,
 	}
 
 	// Send. Retry policy (FR19-22) and 10s timeout (FR22) land in Story 4.1.
