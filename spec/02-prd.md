@@ -112,7 +112,7 @@ Each FR is atomic, testable, and traceable to a section of the brief. FRs are no
 
 ### Compatibility
 
-**NFR9.** The module **must** build and run on Go 1.23+ and Caddy 2.9+. The `go.mod` file **must** declare these as minimum versions.
+**NFR9.** The module **must** build and run on Go 1.25+ and Caddy 2.9+. The `go.mod` file **must** declare these as minimum versions. Note: the Go floor was raised from 1.23 to 1.25 during Story 1.1 implementation because Caddy v2.11.2's transitive dependencies require it. Future Caddy minor releases may push this floor higher.
 
 **NFR10.** Caddyfile syntax **must** remain stable within the v1 major version. Adding optional new directives is permitted; removing or renaming existing ones is not.
 

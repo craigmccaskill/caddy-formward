@@ -28,7 +28,7 @@ Read all three before writing the first line of code. The PRD has the canonical 
 
 ## Current story: Story 1.1
 
-> Initialize Go module at `github.com/craigmccaskill/caddy-formward`. Create `go.mod` with Go 1.23 and Caddy 2.9 dependencies. Implement the minimal `caddy.Module` interface (`CaddyModule()` returning `caddy.ModuleInfo` with ID `http.handlers.formward`).
+> Initialize Go module at `github.com/craigmccaskill/caddy-formward`. Create `go.mod` with Go 1.25 and Caddy 2.11 dependencies. Implement the minimal `caddy.Module` interface (`CaddyModule()` returning `caddy.ModuleInfo` with ID `http.handlers.formward`).
 
 **Acceptance:**
 - `go build ./...` succeeds

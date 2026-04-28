@@ -160,7 +160,7 @@ GitHub stars, forum mentions, and external user reports are noise relative to th
 
 | Constraint | Value |
 |---|---|
-| Language | Go 1.23+ |
+| Language | Go 1.25+ |
 | Caddy version | 2.9+ |
 | License | Apache-2.0 (matches Caddy itself) |
 | Caddyfile syntax stability | Stable within a major version after v1.0.0 |
