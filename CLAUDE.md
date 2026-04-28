@@ -10,22 +10,34 @@ The full project history (initial scope as a Caddy form handler called `caddy-fo
 
 ## Status (as of 2026-04-27)
 
-**Phase:** pre-v1.0 implementation. Spec is locked.
+**Phase:** pre-v1.0 implementation. Spec is locked. Epics 1-4 complete; Epics 5-7 remain.
 
-**Repo state:** Two-module workspace established. Core has three packages so far — `transport/` (Transport interface + Postmark client, NFR1/2/3 covered), `config/` (TOML loader with env-var resolution and full validation), `gateway/` (HTTP form handler skeleton). The `caddy/` adapter module is a stub awaiting Epic 6.
+**Repo state:** Two-module workspace with the standalone gateway functionally complete. Core has 9 packages: `transport/`, `config/`, `gateway/`, `validate/`, `template/`, `response/`, `spam/`, `ratelimit/`, `log/`, plus `cmd/posthorn/` for the binary. The `caddy/` adapter module is still a stub awaiting Epic 6. **2,240 source lines, 3,922 test lines, 212 tests, all passing.**
 
-**Completed stories:**
-- ✅ Epic 1 Story 1.1 — repo renamed `caddy-formward` → `posthorn`
-- ✅ Epic 1 Story 1.2 — two-module workspace + `go.work` + transport migration
-- ✅ Epic 1 Story 1.3 — core has zero Caddy dependency
-- ✅ Epic 2 Story 2.1 — TOML config loader (`core/config/`)
-- ✅ Epic 2 Story 2.2 — HTTP form handler skeleton (`core/gateway/`)
+The full request pipeline is wired end-to-end: body cap → method → content-type → origin → rate limit → parse → honeypot → required fields → email format → template render → transport send (with FR19-22 retry under 10s hard timeout) → JSON 200 or 502. Every decision point logs structured JSON with a per-request UUID submission_id.
 
-**Current story:** Epic 2 Story 2.3 — required-fields and email-format validation in `core/validate/`. Pure functions, returns lists of failed fields. Wires into the gateway handler in Epic 3.
+**Completed stories (12 of 21):**
+- ✅ Epic 1 (Stories 1.1-1.3) — rename, workspace restructure, zero-Caddy-dep enforcement
+- ✅ Epic 2 (Stories 2.1-2.5) — TOML config, HTTP handler, validation, templating, cmd/posthorn
+- ✅ Epic 3 (Stories 3.1-3.2) — spam protection, rate limiting
+- ✅ Epic 4 (Stories 4.1-4.2) — retry policy, structured JSON logging
+
+**Remaining stories (9 of 21):**
+- ⏳ Epic 5 (Stories 5.1-5.3, ~2.5h) — Dockerfile, GitHub Actions CI, multi-arch release workflow
+- ⏳ Epic 6 (Stories 6.1-6.3, ~2.5h) — Caddy adapter module, Caddyfile unmarshaler, parity test
+- ⏳ Epic 7 (Stories 7.1-7.3, ~3h) — README, OSS hygiene files, v1.0.0 tag, modules-page submission
+
+**Current story:** Epic 5 Story 5.1 — `core/Dockerfile` using multi-stage build (golang:1.25 builder → gcr.io/distroless/static runtime). Image entrypoint runs `posthorn serve --config /etc/posthorn/config.toml`.
+
+**Budget:** ~13.5h burned of 25h v1.0 budget. Tracking on plan.
 
 After each story ships, update this "Current story" pointer.
 
-**Architecture deviation:** original spec said `core/http/`; implementation uses `core/gateway/` (package `gateway`) to avoid shadowing stdlib `net/http`. Architecture and PRD updated for consistency.
+**Architecture deviations from original spec:**
+- `core/http/` → `core/gateway/` (package `gateway`) to avoid shadowing stdlib `net/http`. Architecture and PRD updated.
+- Retry timing constants (`requestTimeout`, `transientRetryDelay`, `rateLimitedRetryDelay`) declared as package vars, not consts, so tests can override via the test-only helper `gateway.SetRetryDelaysForTest` (in `core/gateway/export_test.go`). Production never mutates them.
+
+**Deps added during implementation:** `github.com/BurntSushi/toml` (config), `github.com/hashicorp/golang-lru/v2` (rate limiter), `github.com/google/uuid` (submission IDs). All three were named in the architecture doc's allowed-deps list.
 
 ## Read the spec before touching code
 
