@@ -1,4 +1,4 @@
-package formward
+package transport
 
 import (
 	"bytes"
@@ -33,8 +33,8 @@ const (
 
 // postmarkHTTPClient is the package-level HTTP client used by every
 // PostmarkTransport. Sharing one client lets the connection pool amortize
-// across config reloads and across multiple `formward` directives in a
-// single Caddy config.
+// across config reloads and across multiple endpoints in a single
+// Posthorn deployment.
 var postmarkHTTPClient = &http.Client{
 	Timeout: postmarkRequestTimeout,
 }

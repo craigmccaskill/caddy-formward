@@ -1,4 +1,4 @@
-package formward
+package transport
 
 import (
 	"context"
@@ -25,8 +25,8 @@ type Message struct {
 }
 
 // Transport sends a Message. v1.0 ships one implementation (Postmark);
-// the interface exists so SMTP, Resend, etc. can be added in v1.1+ without
-// touching handler logic or Caddyfile syntax (FR2).
+// the interface exists so Resend, Mailgun, SES, and outbound SMTP can
+// be added in v1.1+ without touching handler logic or config schema (FR4).
 //
 // Implementations MUST return a *TransportError on failure so the handler
 // can classify retries (FR18-20). Returning a bare error is a contract bug.

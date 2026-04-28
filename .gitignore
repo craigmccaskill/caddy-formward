@@ -1,3 +1,15 @@
-caddy
+# Built binaries (don't commit large artifacts)
+posthorn
+posthorn.bin
+core/posthorn
+
+# Test artifacts
 *.test
 coverage.out
+
+# Local config files (operators write their own)
+*.toml.local
+config.local.toml
+
+# OS
+.DS_Store
